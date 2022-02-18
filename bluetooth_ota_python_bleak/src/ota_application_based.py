@@ -46,6 +46,7 @@ The BLEAK API documenation and example code can be found here:
 '''
 
 import asyncio
+import time
 import sys, getopt
 
 from bleak import BleakScanner, BleakClient
@@ -54,9 +55,13 @@ from bleak.backends.scanner import BLEDevice, AdvertisementData
 # replace with real characteristic UUID
 CHAR_OTA_CONTROL_UUID = "F7BF3564-FB6D-4E53-88A4-5E37E0326063"
 CHAR_OTA_DATA_UUID = "984227F3-34FC-4045-A5D0-2C581F81A153"
+SL_OTA_SVC_UUID = "1d14d6eefd63-4fa1-bfa4-8f47b42119f0"
 
 target_device_name = ""
 file_to_ota = ""
+
+# Whether to use reliable writes or not...
+MODE_RELIABLE = False
 
 async def start():
     queue = asyncio.Queue()
@@ -64,8 +69,14 @@ async def start():
     def callback(device: BLEDevice, adv: AdvertisementData) -> None:
         if device.name == target_device_name:
             # can use advertising data to filter here as well if desired
+            print("Matched by name!")
             queue.put_nowait(device)
             return
+        if device.address == target_device_name:
+            print("Matched by addr!")
+            queue.put_nowait(device)
+            return
+        print(f"Skipping non-matching device: {device.name} with address: {device.address}")
 
     async with BleakScanner(detection_callback=callback):
         # get the first matching device
@@ -77,46 +88,57 @@ async def start():
 
     disconnected_event = asyncio.Event()
     def disconnected_callback(client):
-        disconnected_event.set()
+        print(f"Got disconnected from {client} and pretending it didn't happen!")
+        #disconnected_event.set()
 
     async with BleakClient(device, disconnected_callback=disconnected_callback) as client:
         print("Connection opened")
 
         # BlueZ doesn't have a proper way to get the MTU, so we have this hack.
         # If this doesn't work for you, you can set the client._mtu_size attribute
-        # to override the value instead. Source: BLEAK 
+        # to override the value instead. Source: BLEAK
+        print("About to try mtu hack")
         if client.__class__.__name__ == "BleakClientBlueZDBus":
-            await client._acquire_mtu()
+            client._mtu_size = 244
+        #     await client._acquire_mtu()
+        print("mtuhack complete")
 
         svcs = await client.get_services()
-        print("Services discovered")
+        [print(f"Service: {s}") for s in svcs]
+        ## FIXME - check it actually _has_ the ota service?!
 
         print("Initiating OTA")
 
         # AN1086. Write 0 to the Control characteristic to initiate OTA
         data = bytearray([0])
-        await client.write_gatt_char(CHAR_OTA_CONTROL_UUID, data)
+        await client.write_gatt_char(CHAR_OTA_CONTROL_UUID, data, True)
         await asyncio.sleep(1.0)    # delay to allow device to process (i.e. clear slot)
 
         # Open the file and write the contents one chunk at a time.
         # For greater throughput, the chunk size should be (MTU size - 3)
         f = open(file_to_ota, "rb")
         gbl_img = bytearray(f.read())
-        print("File size:", len(gbl_img), "bytes")
+        fsize = len(gbl_img)
+        t_start = time.time()
         chunk_size = client.mtu_size - 3    # 3 bytes for Write ATT operation
-        print("Uploading image")
+        print(f"Uploading {fsize} bytes in chunks of {chunk_size}")
         for chunk in (
             gbl_img[i : i + chunk_size] for i in range(0, len(gbl_img), chunk_size)
         ):
-            await client.write_gatt_char(CHAR_OTA_DATA_UUID, chunk)
-            await asyncio.sleep(.2)
+            if MODE_RELIABLE:
+                await client.write_gatt_char(CHAR_OTA_DATA_UUID, chunk, True)
+            else:
+                await client.write_gatt_char(CHAR_OTA_DATA_UUID, chunk, False)
+                await asyncio.sleep(.005)  # lol, spray and pray!
             print(".", end='', flush=True)
         print("")
 
         data = bytearray([3])
-        await client.write_gatt_char(CHAR_OTA_CONTROL_UUID, data)
+        answer = await client.write_gatt_char(CHAR_OTA_CONTROL_UUID, data)
+        t_delta = time.time() - t_start
         await asyncio.sleep(1.0)
-        print("Upload complete")
+
+        print(f"Upload complete, wrote at {fsize / t_delta:0.2f} Bps or {fsize*8/t_delta:0.2f} bps")
 
 
 def main(argv):
