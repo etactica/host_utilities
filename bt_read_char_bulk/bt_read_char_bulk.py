@@ -56,12 +56,11 @@ class App():
             self.flags, self.len_total = struct.unpack("<BH", data)
             logging.info("ok, first packet, expecting %d bytes total", self.len_total)
         else:
-            # TODO - check seqids?
+            # just raw data now...
             #seqid, data_out = struct.unpack("<B%dH" % (len(data) - 1)/2, data)  # for 12 bit adc data...
             #seqid, data_out = struct.unpack("<B%dB" % (len(data) - 1), data)  # for 8 bit seq testing...
-            seqid = struct.unpack_from("<B", data)[0]
-            data_out = data[1:]
-            logging.debug("output data seq %d len: %d = %s", seqid, len(data_out), data_out)
+            data_out = data
+            logging.debug("output data len: %d = %s", len(data_out), data_out)
             self.len_received += len(data_out)
             self.notif_complete = self.len_received >= self.len_total
 
