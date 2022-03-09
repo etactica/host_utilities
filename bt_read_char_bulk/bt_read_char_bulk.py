@@ -8,7 +8,6 @@ import logging
 import struct
 
 import time
-import sys, getopt
 
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s %(name)s %(levelname)s %(message)s')
@@ -17,7 +16,6 @@ from bleak import BleakScanner, BleakClient
 from bleak.backends.scanner import BLEDevice, AdvertisementData
 
 CHAR_TO_READ = "aab81001-842c-4277-8432-a3e884da463b"
-target_device_name = ""
 
 def get_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -33,49 +31,43 @@ class App():
         self.notif_complete = False
         self.len_total = 0
         self.len_received = 0
+        self.data_out = bytearray()
+        self.qq = None
 
     def det_cb(self, dev: BLEDevice, adv: AdvertisementData):
         logging.info("det cb? %s %s", dev, adv)
         if dev.name == opts.device:
             print("Matched by name!")
-            self.ktgt = dev
+            self.qq.put_nowait(dev)
             return True
         if dev.address == opts.device:
             print("matched by address!")
-            self.ktgt = dev
+            self.qq.put_nowait(dev)
             return True
         print(f"Skipping non-matching device: {dev.name} with addr: {dev.address}")
 
     def disconn_cb(self, client):
-        logging.warning("Unexpectedly disconnected from client: %s", client)
+        logging.info("disconnected from client: %s", client)
 
     def notif_cb(self, sender, data):
-        logging.info("received notific from %s with %s", sender, data)
+        #logging.info("received notific from %s with %s", sender, data)
         if self.len_total == 0:
             # First packet...
             self.flags, self.len_total = struct.unpack("<BH", data)
             logging.info("ok, first packet, expecting %d bytes total", self.len_total)
         else:
-            # just raw data now...
-            #seqid, data_out = struct.unpack("<B%dH" % (len(data) - 1)/2, data)  # for 12 bit adc data...
-            #seqid, data_out = struct.unpack("<B%dB" % (len(data) - 1), data)  # for 8 bit seq testing...
-            data_out = data
-            logging.debug("output data len: %d = %s", len(data_out), data_out)
-            self.len_received += len(data_out)
+            self.data_out.extend(data)
+            logging.info("Data so far: len: %d, data: %s", len(self.data_out), self.data_out)
+            self.len_received += len(data)
             self.notif_complete = self.len_received >= self.len_total
 
-
-
     async def start(self):
-        scanner = BleakScanner()
-        scanner.set_scanning_filter(Transport="le")
-        scanner.register_detection_callback(self.det_cb)
-        await scanner.start()
-        await asyncio.sleep(5)
-        await scanner.stop()
-
-        for d in scanner.discovered_devices:
-            logging.info("Found: %s", d)
+        self.qq = asyncio.Queue()
+        async with BleakScanner(detection_callback=self.det_cb):
+            self.ktgt = await self.qq.get()
+            # clear q of anything else
+            while self.qq.qsize():
+                await self.qq.get()
 
         if not self.ktgt:
             print("Failed to find a matching device, aborting")
@@ -89,22 +81,23 @@ class App():
                 #client._mtu_size = 244  # this results in "negotiated mtu" of 247 reported by silabs end
                 client._mtu_size = 60  # nope, this simply did nothing at all! still 247, so that's our host doing it?
                 #await client._acquire_mtu()  # I guess, unless you make this call? nah, that don't do shit....
-            print("mtuhack complete")
+            #print("mtuhack complete")
             print(f"POST working with an mtu size of {client.mtu_size}")
             svcs = await client.get_services()
             [print(f"Service: {s}") for s in svcs]
-            #header = await client.read_gatt_char(self.opts.characteristic)
-            #(version,total_length,wop) = struct.unpack("<BH")
-            #print("gat char read got", xx)
             await client.start_notify(self.opts.characteristic, self.notif_cb)
             while not self.notif_complete:
                 await asyncio.sleep(0.5)
-            await client.stop_notify(self.opts.characteristic)
+
+            # However you end up packing the sample buffer...
+            chans = [struct.unpack_from("<II", self.data_out, i*8) for i in range(len(self.data_out)//8)]
+            logging.info("Final channel data = %s", chans)
+            xx = await client.stop_notify(self.opts.characteristic)
+            logging.info("ok, stopped notify, who's exiting? %s", xx)
 
 
-
-def main(opts):
-    app = App(opts)
+def main(options):
+    app = App(options)
     asyncio.run(app.start())
 
 
