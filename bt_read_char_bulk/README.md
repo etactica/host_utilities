@@ -7,7 +7,7 @@ then more packets til it's finished.
 Works just fine.  however, like all of our bleak scripts so far, once this exits, you must powercycle the bluetooth adapter before it runs again :(
 
 # TODO
-* re-implement in https://github.com/getsenic/gatt-python (jpa has used this)
+* re-implement in https://github.com/getsenic/gatt-python (jpa has used this) (see https://github.com/PetteriAimonen/bletalk/blob/master/utils/connect.py)
 * re-implement in ....? bleson? anything else? 
 * Figure out what's wrong with bleak?
 * what are we not closing properly?!
